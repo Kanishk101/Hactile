@@ -122,24 +122,6 @@ final class SoundRecognitionManager: NSObject, ObservableObject {
     /// Tracks recent confidence values per sound type for smoothing
     private var confidenceHistory: [DetectedSoundType: [Double]] = [:]
     
-    // MARK: - Ambient Noise Calibration
-    
-    /// Baseline ambient noise floor measured at start of listening session.
-    /// Used as a simple amplitude gate to reduce false positives in loud environments.
-    /// - If nil, calibration hasn't completed yet or failed — detection proceeds without gate.
-    private var ambientNoiseFloor: Float?
-    
-    /// Whether calibration is currently in progress
-    private var isCalibrating: Bool = false
-    
-    /// Accumulated RMS samples during calibration
-    private var calibrationSamples: [Float] = []
-    
-    /// Number of buffers to collect during calibration (~1.5 seconds at typical buffer rates)
-    private let calibrationBufferCount: Int = 15
-    
-    /// Multiplier above ambient floor required to pass the amplitude gate
-    private let noiseGateMultiplier: Float = 1.3
     
     // MARK: - Simulation State
     
@@ -406,84 +388,10 @@ final class SoundRecognitionManager: NSObject, ObservableObject {
         // Reset detection state
         resetDetectionState()
         
-        // Start ambient noise calibration
-        startCalibration()
-        
         // Update published state
         isListening = true
     }
     
-    // MARK: - Ambient Noise Calibration
-    
-    /// Starts the calibration process to measure ambient noise floor.
-    /// Calibration runs for ~1.5 seconds, measuring RMS energy of incoming buffers.
-    /// This is a simple amplitude gate — NOT ML logic — to reduce false positives.
-    private func startCalibration() {
-        ambientNoiseFloor = nil
-        calibrationSamples = []
-        isCalibrating = true
-    }
-    
-    /// Processes a buffer during calibration to measure ambient RMS.
-    /// Called from the audio tap before passing to SoundAnalysis.
-    /// - Parameter buffer: The audio buffer to measure
-    /// - Returns: True if calibration is complete
-    private func processCalibrationBuffer(_ buffer: AVAudioPCMBuffer) -> Bool {
-        guard isCalibrating else { return true }
-        
-        let rms = calculateRMS(buffer)
-        calibrationSamples.append(rms)
-        
-        if calibrationSamples.count >= calibrationBufferCount {
-            // Calibration complete — compute average as noise floor
-            let average = calibrationSamples.reduce(0, +) / Float(calibrationSamples.count)
-            ambientNoiseFloor = average
-            isCalibrating = false
-            calibrationSamples = []
-            
-            #if DEBUG
-            print("SoundRecognitionManager: Calibration complete. Noise floor: \(average)")
-            #endif
-            
-            return true
-        }
-        
-        return false
-    }
-    
-    /// Calculates RMS (Root Mean Square) energy of an audio buffer.
-    /// This is a simple amplitude measurement — does NOT store or retain audio data.
-    /// - Parameter buffer: The audio buffer to analyze
-    /// - Returns: RMS energy value
-    private func calculateRMS(_ buffer: AVAudioPCMBuffer) -> Float {
-        guard let channelData = buffer.floatChannelData else { return 0 }
-        
-        let channelDataPointer = channelData[0]
-        let frameLength = Int(buffer.frameLength)
-        
-        guard frameLength > 0 else { return 0 }
-        
-        var sum: Float = 0
-        for i in 0..<frameLength {
-            let sample = channelDataPointer[i]
-            sum += sample * sample
-        }
-        
-        return sqrt(sum / Float(frameLength))
-    }
-    
-    /// Checks if the buffer's energy passes the ambient noise gate.
-    /// - Parameter buffer: The audio buffer to check
-    /// - Returns: True if buffer energy exceeds (noiseFloor × multiplier), or if no calibration exists
-    private func passesNoiseGate(_ buffer: AVAudioPCMBuffer) -> Bool {
-        // If no calibration, allow all detections (fail-safe)
-        guard let noiseFloor = ambientNoiseFloor else { return true }
-        
-        let rms = calculateRMS(buffer)
-        let threshold = noiseFloor * noiseGateMultiplier
-        
-        return rms > threshold
-    }
     
     // MARK: - Stop Listening
     
@@ -526,15 +434,8 @@ final class SoundRecognitionManager: NSObject, ObservableObject {
     ///
     /// PRIVACY: This method processes audio in real-time and does NOT store any data
     private func analyzeBuffer(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime, using analyzer: SNAudioStreamAnalyzer) {
-        // During calibration, measure ambient noise
-        if isCalibrating {
-            _ = processCalibrationBuffer(buffer)
-        }
-        
-        // ALWAYS pass buffers to the analyzer.
+        // Pass all buffers to the analyzer.
         // Apple's SoundAnalysis handles noise filtering internally.
-        // Our previous noise gate was too aggressive and was silently dropping
-        // valid sounds like doorbells and knocks that barely exceeded ambient levels.
         analyzer.analyze(buffer, atAudioFramePosition: time.sampleTime)
     }
     
@@ -544,10 +445,6 @@ final class SoundRecognitionManager: NSObject, ObservableObject {
     private func resetDetectionState() {
         consecutiveDetectionCounts.removeAll()
         confidenceHistory.removeAll()
-        // Reset calibration state for next session
-        ambientNoiseFloor = nil
-        isCalibrating = false
-        calibrationSamples = []
         // Note: We don't reset lastDetectionTimes to preserve cooldowns across stop/start
     }
     
