@@ -271,10 +271,11 @@ struct SoundCard: View {
                         .font(.system(size: 17, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white)
                     
-                    Text(sound.isActive ? "Monitoring" : "Tap to enable")
+                    Text(sound.isActive ? (isListening ? "Monitoring" : "Enabled") : "Tap to enable")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .animation(.easeInOut(duration: 0.2), value: sound.isActive)
+                        .animation(.easeInOut(duration: 0.2), value: isListening)
                 }
             }
             .padding(20)
@@ -613,6 +614,8 @@ struct DashboardHeader: View {
     }
 }
 
+
+
 // MARK: - Active Sounds Summary
 
 struct ActiveSoundsSummary: View {
@@ -636,26 +639,16 @@ struct ActiveSoundsSummary: View {
                     .animation(.easeOut(duration: 0.2), value: isListening)
                     .animation(.easeOut(duration: 0.2), value: activeCount)
                 
-                ZStack(alignment: .leading) {
-                    // Placeholder to maintain height even when hidden
-                    Text("Placeholder")
+                if activeCount > 0 && isListening {
+                    Text(activeNames)
                         .font(.caption)
-                        .foregroundStyle(.clear)
-                        .frame(height: activeCount > 0 && isListening ? nil : 0)
-                    
-                    if activeCount > 0 && isListening {
-                        Text(activeNames)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .leading)))
-                    }
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .leading)))
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .clipped()
-                .animation(.easeOut(duration: 0.25), value: isListening)
-                .animation(.easeOut(duration: 0.2), value: activeNames)
             }
+            .animation(.easeOut(duration: 0.25), value: isListening)
+            .animation(.easeOut(duration: 0.2), value: activeNames)
             
             Spacer(minLength: 0)
         }
@@ -783,22 +776,49 @@ private struct SoundDetectionHeader: View {
     }
 }
 
-// MARK: - Scroll Shadow View
+// MARK: - Scroll Edge Fade
 
-private struct ScrollShadowView: View {
-    let isVisible: Bool
+private struct ScrollBlurOverlay: View {
+    let showTopBlur: Bool
+    
+    // Dark tone matching the mesh background
+    private let fadeColor = Color(red: 0.05, green: 0.03, blue: 0.12)
     
     var body: some View {
-        if isVisible {
+        VStack(spacing: 0) {
+            // Top fade — smooth multi-stop gradient
             LinearGradient(
-                colors: [Color.black.opacity(0.25), Color.black.opacity(0.0)],
+                stops: [
+                    .init(color: fadeColor.opacity(0.9), location: 0.0),
+                    .init(color: fadeColor.opacity(0.6), location: 0.3),
+                    .init(color: fadeColor.opacity(0.2), location: 0.7),
+                    .init(color: fadeColor.opacity(0.0), location: 1.0),
+                ],
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .frame(height: 50)
-            .transition(.opacity)
+            .frame(height: 60)
+            .opacity(showTopBlur ? 1.0 : 0.0)
+            .animation(.easeInOut(duration: 0.25), value: showTopBlur)
+            .allowsHitTesting(false)
+            
+            Spacer()
+            
+            // Bottom fade — subtle, larger region
+            LinearGradient(
+                stops: [
+                    .init(color: fadeColor.opacity(0.0), location: 0.0),
+                    .init(color: fadeColor.opacity(0.15), location: 0.3),
+                    .init(color: fadeColor.opacity(0.4), location: 0.7),
+                    .init(color: fadeColor.opacity(0.6), location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 120)
             .allowsHitTesting(false)
         }
+        .ignoresSafeArea()
     }
 }
 
@@ -866,8 +886,6 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Main Content
-    
     private var mainContent: some View {
         VStack(spacing: 0) {
             DashboardHeader(isListening: soundManager.isListening, onSimulateTap: {
@@ -876,7 +894,7 @@ struct ContentView: View {
             .padding(.top, 20)
             .padding(.horizontal, 20)
             
-            ZStack(alignment: .top) {
+            ZStack {
                 ScrollView(.vertical, showsIndicators: false) {
                     ScrollContentView(
                         activeSoundsCount: activeSounds.count,
@@ -894,7 +912,7 @@ struct ContentView: View {
                     scrollOffset = -value
                 }
                 
-                ScrollShadowView(isVisible: scrollOffset > 4)
+                ScrollBlurOverlay(showTopBlur: scrollOffset > 4)
             }
         }
     }

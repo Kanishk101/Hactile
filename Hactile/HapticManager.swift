@@ -2,50 +2,26 @@
 //  HapticManager.swift
 //  Hactile
 //
-//  Centralized haptic feedback manager that converts detected sounds into
-//  distinct physical sensations using Core Haptics and system fallbacks.
-//
-//  ## Design Philosophy
-//  Each sound type has a unique "tactile signature" that helps users identify
-//  what was detected without looking at their device. This is especially important
-//  for accessibility and situations where visual attention isn't possible.
-//
-//  ## iOS Background Execution Constraints
-//  Core Haptics (CHHapticEngine) is designed for foreground use only.
-//  When the app is backgrounded, iOS suspends the haptic engine and may
-//  terminate it entirely. Attempting to play patterns in the background
-//  will fail silently or cause errors.
-//
-//  Therefore, this manager implements a dual-mode system:
-//  - **Foreground**: Rich Core Haptics patterns with textures and curves
-//  - **Background**: Simple UIKit feedback generators (system-guaranteed)
-//
 
 import Foundation
 import CoreHaptics
 import UIKit
 import AudioToolbox
 
-// MARK: - Detected Sound Type (Local Reference)
-
 /// Sound types that can trigger haptic feedback
-/// Mirrors the DetectedSoundType enum from SoundRecognitionManager
 enum HapticSoundType: String, CaseIterable {
     case doorbell
     case siren
     case knock
     case alarm
+    case smokeAlarm
     case dogBark
     case babyCry
-    case carHorn
-    case glassBreak
-    case gunshot
     case catMeow
     case waterRunning
     case speech
-    case applause
-    case cough
-    case whistle
+    case phoneRinging
+    case carHorn
 }
 
 // MARK: - Haptic Manager
@@ -363,19 +339,19 @@ final class HapticManager {
     /// - Returns: A CHHapticPattern, or nil if creation fails
     private func buildPattern(for sound: HapticSoundType) -> CHHapticPattern? {
         switch sound {
-        case .doorbell:
+        case .doorbell, .phoneRinging:
             return buildDoorbellPattern()
         case .siren, .carHorn:
             return buildSirenPattern()
         case .knock:
             return buildKnockPattern()
-        case .alarm, .glassBreak, .gunshot:
+        case .alarm, .smokeAlarm:
             return buildAlarmPattern()
         case .dogBark, .catMeow:
             return buildDogBarkPattern()
         case .babyCry:
             return buildBabyCryPattern()
-        case .waterRunning, .speech, .applause, .cough, .whistle:
+        case .waterRunning, .speech:
             return buildKnockPattern() // Gentle alert for ambient sounds
         }
     }
@@ -649,8 +625,8 @@ final class HapticManager {
         #endif
         
         switch sound {
-        case .doorbell:
-            // Success notification for friendly doorbell
+        case .doorbell, .phoneRinging:
+            // Success notification for friendly doorbell/phone
             notificationGenerator.notificationOccurred(.success)
             notificationGenerator.prepare()
             
@@ -672,8 +648,8 @@ final class HapticManager {
                 self?.impactRigidGenerator.prepare()
             }
             
-        case .alarm, .glassBreak, .gunshot:
-            // Error notification for urgent alarm/safety sounds
+        case .alarm, .smokeAlarm:
+            // Error notification for urgent alarm
             notificationGenerator.notificationOccurred(.error)
             notificationGenerator.prepare()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
@@ -699,7 +675,7 @@ final class HapticManager {
                 self?.impactMediumGenerator.prepare()
             }
             
-        case .waterRunning, .speech, .applause, .cough, .whistle:
+        case .waterRunning, .speech:
             // Light notification for ambient sounds
             impactLightGenerator.impactOccurred()
             impactLightGenerator.prepare()

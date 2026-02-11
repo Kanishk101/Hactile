@@ -39,16 +39,22 @@ struct HactileApp: App {
         WindowGroup {
             Group {
                 if hasCompletedOnboarding {
-                    // User has completed onboarding — show main dashboard
                     ContentView()
                 } else {
-                    // First launch — show onboarding flow
                     OnboardingView()
                 }
             }
             .onAppear {
-                // Register notification categories once on app launch
                 NotificationManager.shared.registerCategories()
+                
+                // Register for app termination to clean up Live Activities
+                NotificationCenter.default.addObserver(
+                    forName: UIApplication.willTerminateNotification,
+                    object: nil,
+                    queue: .main
+                ) { _ in
+                    HactileLiveActivityManager.shared.endAllActivitiesSync()
+                }
             }
             .onChange(of: scenePhase) { _, newPhase in
                 handleScenePhaseChange(newPhase)

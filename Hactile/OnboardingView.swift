@@ -468,7 +468,7 @@ struct SiriAnnouncePage: View {
             }
             
             // Explanation
-            Text("When wearing AirPods or connected to HomePod, Siri can read your Hactile alerts aloud — perfect for hands-free awareness.")
+            Text("When wearing AirPods, Siri can read your Hactile alerts aloud — perfect for hands-free awareness.")
                 .font(.system(size: 15, weight: .medium, design: .rounded))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

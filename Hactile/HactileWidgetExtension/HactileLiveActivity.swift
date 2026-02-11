@@ -4,19 +4,13 @@
 //
 //  Live Activity and Dynamic Island for Hactile Sound Recognition
 //
-//  NOTE: Types are defined directly in this file for the widget extension.
-//  Widget extensions cannot easily share files with the main app target
-//  when ActivityKit conformances are involved.
+//  NOTE: Types are defined in SharedTypes.swift which is included
+//  in the widget extension target.
 //
 
 import ActivityKit
 import WidgetKit
 import SwiftUI
-import Combine
-
-// MARK: - Shared Types
-// DetectedSoundType and HactileAttributes are defined in SharedTypes.swift
-// Ensure SharedTypes.swift is included in the widget extension target.
 
 // MARK: - Live Activity Widget
 
@@ -59,7 +53,7 @@ struct HactileLiveActivity: Widget {
             } compactLeading: {
                 CompactLeadingView()
             } compactTrailing: {
-                CompactTrailingView()
+                CompactTrailingWaveform()
             } minimal: {
                 MinimalView(soundType: context.attributes.soundType)
             }
@@ -74,63 +68,55 @@ struct CompactLeadingView: View {
     
     var body: some View {
         ZStack {
-            // Animated outer glow ring
             Circle()
                 .fill(Color.green.opacity(0.3))
                 .frame(width: 10, height: 10)
                 .scaleEffect(pulseScale)
                 .opacity(2.0 - pulseScale)
             
-            // Inner dot - smaller to avoid notch clipping
             Circle()
                 .fill(Color.green)
                 .frame(width: 5, height: 5)
                 .shadow(color: Color.green.opacity(0.8), radius: 2)
         }
-        .frame(width: 16, height: 16)  // Fixed container size
-        .padding(.leading, 6)  // More padding from edge
+        .frame(width: 16, height: 16)
+        .padding(.leading, 4)
         .onAppear {
             withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
-                pulseScale = 1.4  // Reduced max scale to prevent clipping
+                pulseScale = 1.4
             }
         }
     }
 }
 
-// MARK: - Compact Trailing View (Animated Waveform)
+// MARK: - Compact Trailing View (Animated Waveform using TimelineView)
 
-struct CompactTrailingView: View {
-    @State private var barHeights: [CGFloat] = [0.4, 0.8, 0.3]
+struct CompactTrailingWaveform: View {
     @State private var isAnimating = false
-    
-    let timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
     
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(0..<3, id: \.self) { index in
-                Capsule()
-                    .fill(Color.white.opacity(0.9))
-                    .frame(width: 2, height: 12 * barHeights[index])
-                    .animation(.easeInOut(duration: 0.25), value: barHeights[index])
-            }
+            // Bar 1
+            Capsule()
+                .fill(Color.white.opacity(0.9))
+                .frame(width: 2, height: isAnimating ? 12 : 4)
+            // Bar 2
+            Capsule()
+                .fill(Color.white.opacity(0.9))
+                .frame(width: 2, height: isAnimating ? 6 : 12)
+            // Bar 3
+            Capsule()
+                .fill(Color.white.opacity(0.9))
+                .frame(width: 2, height: isAnimating ? 10 : 5)
         }
+        .frame(height: 14)
         .padding(.trailing, 4)
+        .animation(
+            .easeInOut(duration: 0.6).repeatForever(autoreverses: true),
+            value: isAnimating
+        )
         .onAppear {
             isAnimating = true
-        }
-        .onDisappear {
-            isAnimating = false
-        }
-        .onReceive(timer) { _ in
-            guard isAnimating else { return }
-            // Continuous animation like audio waveform
-            withAnimation(.easeInOut(duration: 0.25)) {
-                barHeights = [
-                    CGFloat.random(in: 0.4...1.0),
-                    CGFloat.random(in: 0.6...1.0),
-                    CGFloat.random(in: 0.3...0.9)
-                ]
-            }
         }
     }
 }
@@ -152,31 +138,12 @@ struct MinimalView: View {
     }
 }
 
-// MARK: - Expanded Leading View
+// MARK: - Expanded Leading View (with Confidence)
 
-struct ExpandedLeadingView: View {
-    let soundType: DetectedSoundType
-    
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: soundType.icon)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(soundType.glowColor)
-                .shadow(color: soundType.glowColor.opacity(0.5), radius: 4)
-            
-            Text(soundType.displayName)
-                .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                .foregroundStyle(.white)
-        }
-    }
-}
-
-// MARK: - Expanded Leading View (for context)
 struct ExpandedLeadingViewWithConfidence: View {
     let soundType: DetectedSoundType
     let confidence: Double
     
-    // Monitoring mode when confidence is 0
     private var isMonitoringMode: Bool {
         confidence < 0.01
     }
@@ -192,6 +159,7 @@ struct ExpandedLeadingViewWithConfidence: View {
                 .font(.system(.subheadline, design: .rounded, weight: .semibold))
                 .foregroundStyle(.white)
         }
+        .frame(maxHeight: .infinity)  // Vertically center within the region
     }
 }
 
@@ -204,17 +172,15 @@ struct ExpandedTrailingView: View {
         Text(relativeTimeString(from: timestamp))
             .font(.system(.caption, design: .rounded, weight: .medium))
             .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)  // Center vertically, align trailing
             .padding(.top, 2)
     }
     
     private func relativeTimeString(from date: Date) -> String {
         let interval = Date().timeIntervalSince(date)
         
-        if interval < 5 {
-            return "Just now"
-        } else if interval < 60 {
-            return "\(Int(interval))s ago"
+        if interval < 60 {
+            return "Now"
         } else if interval < 3600 {
             return "\(Int(interval / 60))m ago"
         } else {
@@ -229,7 +195,6 @@ struct ConfidenceCapsuleView: View {
     let soundType: DetectedSoundType
     let confidence: Double
     
-    // Monitoring mode when confidence is 0
     private var isMonitoringMode: Bool {
         confidence < 0.01
     }
@@ -241,7 +206,7 @@ struct ConfidenceCapsuleView: View {
                 .fill(Color.white.opacity(0.1))
                 .frame(height: 36)
             
-            // Filled confidence bar (animated for monitoring mode)
+            // Filled confidence bar (only in detection mode)
             if !isMonitoringMode {
                 GeometryReader { geometry in
                     Capsule()
@@ -284,7 +249,7 @@ struct ConfidenceCapsuleView: View {
     }
 }
 
-// MARK: - Expanded Bottom View (Action Button)
+// MARK: - Expanded Bottom View (Acknowledge Button)
 
 struct ExpandedBottomView: View {
     let isAcknowledged: Bool
@@ -292,7 +257,7 @@ struct ExpandedBottomView: View {
     var body: some View {
         VStack(spacing: 0) {
             if !isAcknowledged {
-                // Acknowledge button with proper Link that opens URL scheme
+                // Acknowledge button — opens URL scheme to dismiss the Live Activity
                 Link(destination: URL(string: "hactile://acknowledge")!) {
                     HStack(spacing: 8) {
                         Image(systemName: "hand.tap.fill")
@@ -315,7 +280,6 @@ struct ExpandedBottomView: View {
                 }
                 .padding(.horizontal, 8)
             } else {
-                // Acknowledged state (not tappable)
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 14, weight: .semibold))
@@ -350,14 +314,13 @@ struct LockScreenLiveActivityView: View {
     let timestamp: Date
     let isAcknowledged: Bool
     
-    // Monitoring mode when confidence is 0
     private var isMonitoringMode: Bool {
         confidence < 0.01
     }
     
     var body: some View {
         ZStack {
-            // Background with subtle gradient glow
+            // Background gradient
             ContainerRelativeShape()
                 .fill(
                     LinearGradient(
@@ -378,10 +341,9 @@ struct LockScreenLiveActivityView: View {
             // Content
             VStack(spacing: 16) {
                 // Header
-                HStack(alignment: .top) {
+                HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 8) {
-                            // Status indicator
                             ZStack {
                                 Circle()
                                     .fill((isMonitoringMode ? Color.cyan : soundType.glowColor).opacity(0.3))
@@ -419,7 +381,7 @@ struct LockScreenLiveActivityView: View {
                     }
                 }
                 
-                // Confidence bar (only show if not monitoring)
+                // Confidence bar (only in detection mode)
                 if !isMonitoringMode {
                     LockScreenConfidenceBar(
                         soundType: soundType,
@@ -427,7 +389,6 @@ struct LockScreenLiveActivityView: View {
                         location: location
                     )
                 } else {
-                    // Monitoring status text
                     Text("Waiting for sounds...")
                         .font(.system(.subheadline, design: .rounded, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -436,7 +397,6 @@ struct LockScreenLiveActivityView: View {
                 
                 // Bottom info row
                 HStack {
-                    // Time info
                     HStack(spacing: 6) {
                         Image(systemName: "clock.fill")
                             .font(.system(size: 12))
@@ -449,8 +409,7 @@ struct LockScreenLiveActivityView: View {
                     
                     Spacer()
                     
-                    // Action hint
-                    if !isAcknowledged {
+                    if !isAcknowledged && !isMonitoringMode {
                         HStack(spacing: 4) {
                             Text("Tap to acknowledge")
                                 .font(.system(.caption2, design: .rounded))
@@ -460,7 +419,7 @@ struct LockScreenLiveActivityView: View {
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(.secondary)
                         }
-                    } else {
+                    } else if isAcknowledged {
                         HStack(spacing: 4) {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.system(size: 12))
@@ -480,10 +439,8 @@ struct LockScreenLiveActivityView: View {
     private func relativeTimeString(from date: Date) -> String {
         let interval = Date().timeIntervalSince(date)
         
-        if interval < 5 {
-            return "Just now"
-        } else if interval < 60 {
-            return "\(Int(interval))s ago"
+        if interval < 60 {
+            return "Now"
         } else if interval < 3600 {
             return "\(Int(interval / 60))m ago"
         } else {
@@ -501,14 +458,11 @@ struct LockScreenConfidenceBar: View {
     
     var body: some View {
         VStack(spacing: 8) {
-            // Confidence bar
             ZStack(alignment: .leading) {
-                // Background track
                 Capsule()
                     .fill(Color.white.opacity(0.1))
                     .frame(height: 32)
                 
-                // Filled bar
                 GeometryReader { geometry in
                     Capsule()
                         .fill(
@@ -527,7 +481,6 @@ struct LockScreenConfidenceBar: View {
                 .frame(height: 32)
                 .clipShape(Capsule())
                 
-                // Overlay content
                 HStack {
                     HStack(spacing: 6) {
                         Image(systemName: "waveform")
@@ -548,14 +501,12 @@ struct LockScreenConfidenceBar: View {
                         .padding(.trailing, 12)
                 }
                 
-                // Border
                 Capsule()
                     .stroke(soundType.glowColor.opacity(0.3), lineWidth: 0.5)
                     .frame(height: 32)
             }
             
-            // Location subtitle
-            if let location = location {
+            if let location = location, location != "Monitoring" {
                 HStack(spacing: 4) {
                     Image(systemName: "location.fill")
                         .font(.system(size: 10))

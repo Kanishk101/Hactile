@@ -2,23 +2,12 @@
 //  SoundRecognitionManager.swift
 //  Hactile
 //
-//  Core intelligence layer for real-time sound recognition.
-//  Uses AVAudioEngine + SoundAnalysis for on-device, privacy-first audio analysis.
-//
-//  Design Decision: ObservableObject singleton pattern chosen because:
-//  1. Sound recognition is a global system service (only one mic stream should exist)
-//  2. Multiple views need to observe detection state
-//  3. Lifecycle must persist across view hierarchies
-//
 
 import Foundation
 import AVFoundation
 import SoundAnalysis
 import Combine
 import UIKit
-// MARK: - Type Import Note
-// DetectedSoundType is defined in SharedTypes.swift
-// This file uses that shared definition to avoid type ambiguity
 
 // MARK: - Detection Event
 
@@ -62,24 +51,6 @@ enum SoundRecognitionError: Error, LocalizedError {
     }
 }
 
-// MARK: - Sound Recognition Manager
-
-/// Central manager for real-time sound recognition.
-///
-/// ## Architecture Overview
-/// ```
-/// [Microphone] → [AVAudioEngine] → [SNAudioStreamAnalyzer] → [Detection Logic] → [Outputs]
-///                     ↓                      ↓                       ↓
-///               Input Node Tap         Classification          Confidence Gate
-///                                        Results              Temporal Smoothing
-///                                                                Cooldown
-/// ```
-///
-/// ## Privacy Guarantees
-/// - Audio is NEVER recorded or stored
-/// - Buffers are processed and immediately discarded
-/// - All analysis happens on-device using Apple's SoundAnalysis framework
-///
 @MainActor
 final class SoundRecognitionManager: NSObject, ObservableObject {
     
@@ -87,6 +58,13 @@ final class SoundRecognitionManager: NSObject, ObservableObject {
     
     static let shared = SoundRecognitionManager()
     
+    /// App launch time for debug elapsed timestamps
+    private let appStartTime = Date()
+    
+    /// Elapsed seconds since app launch
+    private var elapsed: String {
+        String(format: "%.1fs", Date().timeIntervalSince(appStartTime))
+    }
     // MARK: - Published State
     
     /// Whether the manager is actively listening to the microphone
@@ -111,20 +89,14 @@ final class SoundRecognitionManager: NSObject, ObservableObject {
     
     // MARK: - Detection Thresholds
     
-    // Per-sound confidence thresholds are defined in DetectedSoundType.confidenceThreshold
-    // This allows tuning sensitivity per sound type without changing core logic.
+    private let cooldownDuration: TimeInterval = 10.0
+    private let globalCooldownDuration: TimeInterval = 10.0
+    private var lastGlobalDetectionTime: Date?
+    private var lastConfirmedSoundType: DetectedSoundType?
     
-    /// Number of consecutive positive frames required to confirm a detection.
-    /// Set to 1 because Apple's version1 classifier already uses a 1-second
-    /// analysis window with 50% overlap, providing built-in temporal smoothing.
-    /// Requiring 2+ frames means a sound must persist for ~1.5s minimum,
-    /// which is too long for brief sounds like doorbell rings or single knocks.
-    private let requiredConsecutiveFrames: Int = 1
-    
-    /// Cooldown period (in seconds) before the same sound type can trigger again.
-    /// 3 seconds balances between spam prevention and catching repeat sounds
-    /// (e.g. someone knocking repeatedly at the door).
-    private let cooldownDuration: TimeInterval = 3.0
+    /// Tracks recent confidence scores for ALL above-threshold candidates (timestamp, confidence)
+    /// Used to detect competing/confused sound types and suppress false positives
+    private var recentCandidateScores: [DetectedSoundType: [(time: Date, confidence: Double)]] = [:]
     
     // MARK: - Audio Pipeline Components
     
@@ -599,37 +571,109 @@ final class SoundRecognitionManager: NSObject, ObservableObject {
         
         // Step 2: Confidence gate
         guard confidence >= soundType.confidenceThreshold else {
-            // Reset consecutive count if confidence drops below per-sound threshold
-            consecutiveDetectionCounts[soundType] = 0
-            confidenceHistory[soundType] = []
+            let current = consecutiveDetectionCounts[soundType] ?? 0
+            if current > 0 {
+                consecutiveDetectionCounts[soundType] = current - 1
+                #if DEBUG
+                print("[\(elapsed)] ⬇️ \(soundType) conf=\(String(format: "%.3f", confidence)) < threshold=\(soundType.confidenceThreshold) | frames=\(current - 1)/\(soundType.requiredFrames)")
+                #endif
+            }
             return
         }
         
-        // Track confidence history for smoothing (last 5 frames)
+        // Step 3: Global cooldown — blocks OTHER sound types for 10s after any detection.
+        // The SAME confirmed type is exempt (handled by per-type cooldown) so it can
+        // re-fire every 10s if still playing — and each re-fire resets this global clock,
+        // keeping misclassifications (e.g. phoneRinging from an alarm) permanently blocked.
+        if soundType != lastConfirmedSoundType, let lastGlobal = lastGlobalDetectionTime {
+            let sinceGlobal = Date().timeIntervalSince(lastGlobal)
+            if sinceGlobal < globalCooldownDuration {
+                #if DEBUG
+                print("[\(elapsed)] 🚫 \(soundType) SKIPPED (global cooldown \(String(format: "%.1f", sinceGlobal))s < \(globalCooldownDuration)s)")
+                #endif
+                consecutiveDetectionCounts[soundType] = 0
+                confidenceHistory[soundType] = []
+                return
+            }
+        }
+        
+        // Step 4: Per-type cooldown — also checked BEFORE counting frames
+        if let lastTime = lastDetectionTimes[soundType] {
+            let sinceLastType = Date().timeIntervalSince(lastTime)
+            if sinceLastType < cooldownDuration {
+                #if DEBUG
+                print("[\(elapsed)] 🚫 \(soundType) SKIPPED (per-type cooldown \(String(format: "%.1f", sinceLastType))s < \(cooldownDuration)s) — not counting frame")
+                #endif
+                consecutiveDetectionCounts[soundType] = 0
+                return
+            }
+        }
+        
+        // Step 5: Track confidence history for smoothing (last 5 frames)
         var history = confidenceHistory[soundType] ?? []
         history.append(confidence)
         if history.count > 5 { history.removeFirst() }
         confidenceHistory[soundType] = history
         
-        // Step 3: Temporal smoothing - increment consecutive count
-        let currentCount = (consecutiveDetectionCounts[soundType] ?? 0) + 1
-        consecutiveDetectionCounts[soundType] = currentCount
+        // Step 6: Temporal smoothing - increment consecutive count
+        let newCount = (consecutiveDetectionCounts[soundType] ?? 0) + 1
+        consecutiveDetectionCounts[soundType] = newCount
+        
+        #if DEBUG
+        print("[\(elapsed)] ✅ \(soundType) conf=\(String(format: "%.3f", confidence)) threshold=\(soundType.confidenceThreshold) | frames=\(newCount)/\(soundType.requiredFrames)")
+        #endif
         
         // Check if we've reached the required consecutive frames
-        guard currentCount >= requiredConsecutiveFrames else {
+        guard newCount >= soundType.requiredFrames else {
             return
         }
         
-        // Step 4: Cooldown check
-        if let lastTime = lastDetectionTimes[soundType] {
-            let elapsed = Date().timeIntervalSince(lastTime)
-            guard elapsed >= cooldownDuration else {
+        // Step 7: Competing candidate check — suppress false positives using dominance rules
+        // Uses explicit dominance pairs to resolve known classifier confusions
+        let now = Date()
+        let windowDuration: TimeInterval = 5.0
+        
+        for (otherType, scores) in recentCandidateScores where otherType != soundType {
+            let recentScores = scores.filter { now.timeIntervalSince($0.time) < windowDuration }
+            guard !recentScores.isEmpty else { continue }
+            
+            // If I dominate this competitor, skip it — it can never suppress me
+            if soundType.dominatesOver.contains(otherType) {
+                continue
+            }
+            
+            // If the competitor dominates ME, I'm the false positive — suppress me
+            if otherType.dominatesOver.contains(soundType) {
+                #if DEBUG
+                print("[\(elapsed)] ⚠️ \(soundType) SUPPRESSED — \(otherType) dominates (confusion pair) and is also present")
+                #endif
+                consecutiveDetectionCounts[soundType] = 0
+                return
+            }
+            
+            // For non-dominance pairs, fall back to confidence comparison
+            let myScores = recentCandidateScores[soundType]?.filter { now.timeIntervalSince($0.time) < windowDuration } ?? []
+            let myAvg = myScores.isEmpty ? confidence : myScores.map(\.confidence).reduce(0, +) / Double(myScores.count)
+            let otherAvg = recentScores.map(\.confidence).reduce(0, +) / Double(recentScores.count)
+            if otherAvg > myAvg {
+                #if DEBUG
+                print("[\(elapsed)] ⚠️ \(soundType) SUPPRESSED — \(otherType) has higher avg conf (\(String(format: "%.3f", otherAvg)) vs \(String(format: "%.3f", myAvg)))")
+                #endif
+                consecutiveDetectionCounts[soundType] = 0
                 return
             }
         }
         
         // All checks passed - confirm the detection!
         let smoothedConfidence = (confidenceHistory[soundType]?.reduce(0, +) ?? confidence) / Double(max(confidenceHistory[soundType]?.count ?? 1, 1))
+        
+        #if DEBUG
+        print("[\(elapsed)] 🎉 \(soundType) CONFIRMED! smoothedConf=\(String(format: "%.3f", smoothedConfidence)) — triggering notification + haptic + live activity")
+        #endif
+        
+        // Clear all candidate scores on confirmation
+        recentCandidateScores.removeAll()
+        
         confirmDetection(soundType: soundType, confidence: smoothedConfidence)
     }
     
@@ -640,12 +684,19 @@ final class SoundRecognitionManager: NSObject, ObservableObject {
     private func confirmDetection(soundType: DetectedSoundType, confidence: Double) {
         let now = Date()
         
-        // Update cooldown timestamp
+        // Update BOTH per-type and global cooldown timestamps
         lastDetectionTimes[soundType] = now
+        lastGlobalDetectionTime = now
+        lastConfirmedSoundType = soundType
         
-        // Reset consecutive count + confidence history
-        consecutiveDetectionCounts[soundType] = 0
-        confidenceHistory[soundType] = []
+        // Reset consecutive count + confidence history for ALL types
+        // This prevents other sound types from firing right after
+        consecutiveDetectionCounts.removeAll()
+        confidenceHistory.removeAll()
+        
+        #if DEBUG
+        print("[\(elapsed)] 📋 confirmDetection: \(soundType) | globalCooldown set | all counters reset")
+        #endif
         
         // Create detection event
         let event = DetectionEvent(
@@ -674,17 +725,24 @@ final class SoundRecognitionManager: NSObject, ObservableObject {
     /// Triggers all outputs for a confirmed detection
     /// - Parameter event: The detection event
     private func handleConfirmedDetection(_ event: DetectionEvent) {
-        // Trigger haptic feedback when in foreground
+        #if DEBUG
+        print("[\(elapsed)] 🔔 handleConfirmedDetection: \(event.soundType) conf=\(String(format: "%.3f", event.confidence))")
+        print("[\(elapsed)] 🔔   → Triggering haptic...")
+        #endif
         HapticManager.shared.playPattern(for: mapToHapticType(event.soundType))
         
-        // Start or update Live Activity for EVERY detection
+        #if DEBUG
+        print("[\(elapsed)] 🔔   → Starting/updating Live Activity...")
+        #endif
         startOrUpdateLiveActivity(for: event)
         
-        // Post local notification for EVERY detection (foreground and background)
+        #if DEBUG
+        print("[\(elapsed)] 🔔   → Posting local notification...")
+        #endif
         NotificationManager.shared.postDetectionNotification(for: event)
         
         #if DEBUG
-        print("SoundRecognitionManager: Triggered outputs for \(event.soundType) detection")
+        print("[\(elapsed)] 🔔   → ALL OUTPUTS COMPLETE for \(event.soundType)")
         #endif
     }
     
@@ -694,17 +752,14 @@ final class SoundRecognitionManager: NSObject, ObservableObject {
         case .siren: return .siren
         case .knock: return .knock
         case .alarm: return .alarm
+        case .smokeAlarm: return .smokeAlarm
         case .dogBark: return .dogBark
         case .babyCry: return .babyCry
-        case .carHorn: return .carHorn
-        case .glassBreak: return .glassBreak
-        case .gunshot: return .gunshot
         case .catMeow: return .catMeow
         case .waterRunning: return .waterRunning
         case .speech: return .speech
-        case .applause: return .applause
-        case .cough: return .cough
-        case .whistle: return .whistle
+        case .phoneRinging: return .phoneRinging
+        case .carHorn: return .carHorn
         }
     }
     
@@ -749,7 +804,7 @@ final class SoundRecognitionManager: NSObject, ObservableObject {
         let baseThreshold = type.confidenceThreshold
         let variationRange = (1.0 - baseThreshold) * 0.9  // Use 90% of available range above threshold
         let simulatedConfidence = baseThreshold + Double.random(in: 0...variationRange)
-        let requiredFrames = self.requiredConsecutiveFrames
+        let requiredFrames = type.requiredFrames
         
         // Use a timer to simulate multiple consecutive frames
         // This respects the temporal smoothing requirement
@@ -793,26 +848,46 @@ extension SoundRecognitionManager: SNResultsObserving {
     ///   - request: The classification request that produced the result
     ///   - result: The classification result containing detected sounds and confidences
     nonisolated func request(_ request: SNRequest, didProduce result: SNResult) {
-        // Ensure we have a classification result
         guard let classificationResult = result as? SNClassificationResult else {
             return
         }
         
-        // Process each classification in the result
-        // Classifications are sorted by confidence (highest first)
+        // Collect ALL above-threshold candidates and find the best match
+        var bestMatch: (soundType: DetectedSoundType, confidence: Double)?
+        var allCandidates: [(soundType: DetectedSoundType, confidence: Double)] = []
+        
         for classification in classificationResult.classifications {
             let identifier = classification.identifier
             let confidence = Double(classification.confidence)
             
-            // Process on main actor for thread safety
-            Task { @MainActor in
-                // Try to map the classifier label to our sound types
-                if let soundType = DetectedSoundType(classifierLabel: identifier) {
-                    self.processDetection(
-                        soundType: soundType,
-                        confidence: confidence
-                    )
+            if let soundType = DetectedSoundType(classifierLabel: identifier) {
+                // Track ALL above-threshold candidates for false positive suppression
+                if confidence >= soundType.confidenceThreshold {
+                    allCandidates.append((soundType, confidence))
                 }
+                if bestMatch == nil || confidence > bestMatch!.confidence {
+                    bestMatch = (soundType, confidence)
+                }
+            }
+        }
+        
+        // Process the single best match, but also track all candidates
+        if let match = bestMatch {
+            Task { @MainActor in
+                // Record all above-threshold candidates for competing detection analysis
+                let now = Date()
+                for candidate in allCandidates {
+                    var scores = self.recentCandidateScores[candidate.soundType] ?? []
+                    scores.append((time: now, confidence: candidate.confidence))
+                    // Keep only last 5 seconds of scores
+                    scores = scores.filter { now.timeIntervalSince($0.time) < 5.0 }
+                    self.recentCandidateScores[candidate.soundType] = scores
+                }
+                
+                self.processDetection(
+                    soundType: match.soundType,
+                    confidence: match.confidence
+                )
             }
         }
     }
