@@ -213,7 +213,7 @@ struct ConceptPage: View {
             }
             
             // Subtitle
-            Text("Sound recognition through haptics")
+            Text("Sound Alerts for the Focused.")
                 .font(.system(size: 17, weight: .medium, design: .rounded))
                 .foregroundStyle(.secondary)
                 .padding(.top, 8)
@@ -468,7 +468,7 @@ struct SiriAnnouncePage: View {
             }
             
             // Explanation
-            Text("When wearing AirPods, Siri can read your Hactile alerts aloud — perfect for hands-free awareness.")
+            Text("When wearing AirPods, Siri can read your Hactile alerts aloud for hands-free awareness.\n\nToggle Announce When Connected To Headphones, then toggle Announce Notications From Hactile.")
                 .font(.system(size: 15, weight: .medium, design: .rounded))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -476,7 +476,7 @@ struct SiriAnnouncePage: View {
             
             // Open Settings button
             Button {
-                if let url = URL(string: "App-prefs:SIRI&path=ANNOUNCE_NOTIFICATIONS") {
+                if let url = URL(string: "App-prefs:root=SIRI&path=ANNOUNCE_NOTIFICATIONS") {
                     UIApplication.shared.open(url)
                 } else if let settingsURL = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(settingsURL)
